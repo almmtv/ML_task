@@ -1,6 +1,4 @@
 # ML_task
-finhub_data.py показывавает, какие данные об акциях могут быть полезны для исследования.
+When running the finhub_data.py from the command line, you must specify the name of the stock you want to learn about.
 
-analysis.py создает отчёт об анализе исторических данных за год.
-
-Для того, чтобы посмотреть файл report.html необходимо скачать его.
+analysis.ipynb creates a report on the analysis of historical data for the year.
