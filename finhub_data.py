@@ -1,8 +1,9 @@
-import requests
 import queue
 from threading import Thread
 import datetime
+import urllib
 import psycopg2
+import petl as etl
 import sys
 
 
@@ -20,17 +21,8 @@ class Database:
         )
         self.cursor = self.con.cursor()
 
-    def connect(self):
-        pass
-
     def disconnect(self):
-        self.con.commit()
         self.con.close()
-
-    def insert(self, table_name, values):
-        self.cursor.execute(
-            f"INSERT INTO {table_name} VALUES {values}"
-        )
 
 
 def financial_quote_link(stock_name, api_key):
@@ -61,18 +53,16 @@ def recommendation_trends_link(stock_name, api_key):
 
 
 def request(url):
+    table_header = url[url.find('v1') + 3:url.find('?')]
     try:
-        r = requests.get(url)
-    except requests.exceptions.ConnectionError:
-        print('Connection error')
-        return None
-    if str(r) == '<Response [401]>':
-        print('Wrong token')
-        return None
-    return r.json()
+        r = etl.fromtext(url, header=[table_header])
+    except urllib.error.URLError:
+        print('Connection error or Wrong token')
+        r = ''
+    return r
 
 
-stock = sys.argv
+stock = sys.argv[-1]
 token = 'c240262ad3iaqj3tjgng'
 links = [financial_quote_link(stock, token), news_sentiment_link(stock, token), basic_financials_link(stock, token),
          insiders_transaction_link(stock, '2021-02-03', '2021-05-03', token), recommendation_trends_link(stock, token)]
@@ -94,116 +84,63 @@ recommendation = []
 insiders = []
 metrics = []
 sentiment = []
-
 for value in result:
-    print(value)
-    if 'c' in value:
-        value['t'] = str(datetime.datetime.fromtimestamp(value['t']))
-        price = value
-    if 'data' in value:
-        for transaction in value['data']:
+    table_h = value[0][0]
+    table_c = eval(value[1][0].replace('null', 'None'))
+    if table_h == 'quote':
+        table_c['t'] = str(datetime.datetime.fromtimestamp(table_c['t']))
+        price = table_c
+    if table_h == 'stock/insider-transactions':
+        for transaction in table_c['data']:
             insiders.append(transaction)
-    if 'metric' in value:
-        metrics = value['metric']
-    if 'buzz' in value:
-        sentiment = value
-    if (len(value) > 1) and ('buy' in value):
-        for j in value:
-            recommendation.append(j)
+    if table_h == 'news-sentiment':
+        sentiment = table_c
+    if table_h == 'stock/recommendation':
+        for recommend in table_c:
+            recommendation.append(recommend)
+    if table_h == 'stock/metric':
+        metrics = table_c['metric']
 
-price_for_table = []
-recommendation_for_table = []
-insiders_for_table = []
-metrics_for_table = []
-sentiment_for_table = []
-
-for value in price:
-    if value != 't':
-        price_for_table.append(float(price[value]))
-price_for_table.append(price['t'])
-price = tuple(price_for_table)
-
-for i in range(len(recommendation)):
-    recommendation_for_table.append([])
-    for value in recommendation[i]:
-        if (value != 'period') and (value != 'symbol'):
-            recommendation_for_table[i].append(recommendation[i][value])
-    recommendation_for_table[i].append(recommendation[i]['period'])
-    recommendation_for_table[i] = tuple(recommendation_for_table[i])
-
-for i in range(len(insiders)):
-    insiders_for_table.append([])
-    for metric in insiders[i]:
-        if metric != 'transactionDate':
-            insiders_for_table[i].append((insiders[i][metric]))
-    insiders_for_table[i].append(insiders[i]['transactionDate'])
-    insiders_for_table[i] = tuple(insiders_for_table[i])
+table_price = etl.fromdicts([price])
+table_price = etl.addfield(table_price, 'symbol', stock)
+table_recommendation = etl.movefield(etl.fromdicts(recommendation), 'period', 6)
+table_insiders = etl.movefield(etl.fromdicts(insiders), 'transactionDate', 6)
+table_insiders = etl.addfield(table_insiders, 'symbol', stock)
 
 list_of_metrics = ['10DayAverageTradingVolume', '13WeekPriceReturnDaily', '26WeekPriceReturnDaily',
                    '3MonthAverageTradingVolume', '52WeekHigh', '52WeekHighDate', '52WeekLow', '52WeekLowDate',
                    '52WeekPriceReturnDaily', '5DayPriceReturnDaily']
+important_metrics = {}
 for metric in list_of_metrics:
-    metrics_for_table.append(metrics[metric])
-metrics_for_table.append(str(datetime.datetime.now())[:19])
-metrics = tuple(metrics_for_table)
+    important_metrics[metric] = metrics[metric]
+important_metrics['_date'] = str(datetime.datetime.now())[:19]
+table_metrics = etl.fromdicts([important_metrics])
+table_financial_metrics = etl.rename(table_metrics, {'10DayAverageTradingVolume': '_10DayAverageTradingVolume',
+                                                     '13WeekPriceReturnDaily': '_13WeekPriceReturnDaily',
+                                                     '26WeekPriceReturnDaily': '_26WeekPriceReturnDaily',
+                                                     '3MonthAverageTradingVolume': '_3MonthAverageTradingVolume',
+                                                     '52WeekHigh': '_52WeekHigh',
+                                                     '52WeekHighDate': '_52WeekHighDate',
+                                                     '52WeekLow': '_52WeekLow',
+                                                     '52WeekLowDate': '_52WeekLowDate',
+                                                     '52WeekPriceReturnDaily': '_52WeekPriceReturnDaily',
+                                                     '5DayPriceReturnDaily': '_5DayPriceReturnDaily'})
+table_financial_metrics = etl.addfield(table_financial_metrics, 'symbol', stock)
 
 list_of_sentiments = ['bearishPercent', 'bullishPercent']
+important_sentiments = {}
 for sentiments in list_of_sentiments:
-    sentiment_for_table.append(sentiment['sentiment'][sentiments])
-sentiment_for_table.append(str(datetime.datetime.now())[:19])
-sentiment = tuple(sentiment_for_table)
+    important_sentiments[sentiments] = sentiment['sentiment'][sentiments]
+important_sentiments['date_and_time'] = str(datetime.datetime.now())[:19]
+table_sentiment = etl.fromdicts([important_sentiments])
+table_sentiment = etl.addfield(table_sentiment, 'symbol', stock)
+tables_without_symbol = [table_price, table_insiders, table_financial_metrics, table_sentiment]
 
-# Creating tables
-# db = Database('postgres', 'postgres', '123456f')
-# db.connect()
-# db.cursor.execute('''CREATE TABLE PRICE
-#      (CURRENT_PRICE FLOAT,
-#      HIGH_PRICE_OF_THE_DAY FLOAT,
-#      LOW_PRICE_OF_THE_DAY FLOAT,
-#      OPEN_PRICE_OF_THE_DAY FLOAT,
-#      PREVIOUS_CLOSE_PRICE FLOAT,
-#      DATE_AND_TIME CHAR(19));''')
-# db.cursor.execute(''' CREATE TABLE RECOMMENDATION
-#     (BUY INT,
-#     HOLD INT,
-#     SELL INT,
-#     STRONG_BUY INT,
-#     STRONG_SELL INT,
-#     PERIOD CHAR(10));''')
-# db.cursor.execute(''' CREATE TABLE INSIDERS
-#     (INSIDER_NAME VARCHAR(50),
-#     SHARE INT,
-#     CHANGE INT,
-#     FILING_DATE VARCHAR(10),
-#     TRANSACTION_CODE VARCHAR(2),
-#     TRANSACTION_PRICE FLOAT,
-#     TRANSACTION_DATE VARCHAR(10));''')
-# db.cursor.execute(''' CREATE TABLE FINANCIAL_METRICS
-#     (_10_DAY_AVERAGE_TRAIDING_VOLUME FLOAT,
-#     _13_WEEK_PRICE_RETURN_DAILY FLOAT,
-#     _26_WEEK_PRICE_RETURN_DAILY FLOAT,
-#     _3_MONTH_AVERAGE_TRAIDING_VOLUME FLOAT,
-#     _52_WEEK_HIGH FLOAT,
-#     _52_WEEK_HIGH_DATE CHAR(19),
-#     _52_WEEK_LOW FLOAT,
-#     _52_WEEK_LOW_DATE CHAR(19),
-#     _52_WEEK_PRICE_RETURN_DAILY FLOAT,
-#     _5_DAY_PRICE_RETURN_DAILY FLOAT,
-#     DATE_AND_TIME CHAR(19));''')
-# db.cursor.execute(''' CREATE TABLE SENTIMENT
-#     (BEARISH_PERCENT FLOAT,
-#     BULLISH_PERCENT FLOAT,
-#     DATE_AND_TIME CHAR(19));''')
-# disconnect(connection)
-
-# Writing to a table
-# db = Database('postgres', 'postgres', '123456f')
-# db.connect()
-# db.insert('PRICE', price)
-# for recommend in recommendation_for_table:
-#     db.insert('RECOMMENDATION', recommend)
-# for insiders in insiders_for_table:
-#     db.insert('RECOMMENDATION', recommend)
-# db.insert('FINANCIAL_METRICS', metrics)
-# db.insert('SENTIMENT', sentiment)
-# db.disconnect()
+db = Database('postgres', 'postgres', '123456f')
+db_connection = db.con
+etl.appenddb(table_price, db_connection, 'price')
+etl.todb(table_recommendation, db_connection, 'recommendation')
+etl.todb(table_insiders, db_connection, 'insiders')
+etl.appenddb(table_financial_metrics, db_connection, 'financial_metrics')
+etl.appenddb(table_sentiment, db_connection, 'sentiment')
+db.disconnect()
