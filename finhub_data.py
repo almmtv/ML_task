@@ -5,6 +5,7 @@ import urllib
 import psycopg2
 import petl as etl
 import sys
+from flask import Flask, request, jsonify
 
 
 class Database:
@@ -52,7 +53,7 @@ def recommendation_trends_link(stock_name, api_key):
     return link
 
 
-def request(url):
+def url_request(url):
     table_header = url[url.find('v1') + 3:url.find('?')]
     try:
         r = etl.fromtext(url, header=[table_header])
@@ -70,7 +71,7 @@ links = [financial_quote_link(stock, token), news_sentiment_link(stock, token), 
 que = queue.Queue()
 threads_list = list()
 for link in links:
-    t = Thread(target=lambda q, arg1: q.put(request(arg1)), args=(que, link))
+    t = Thread(target=lambda q, arg1: q.put(url_request(arg1)), args=(que, link))
     t.start()
     threads_list.append(t)
 for t in threads_list:
@@ -143,4 +144,67 @@ etl.todb(table_recommendation, db_connection, 'recommendation')
 etl.todb(table_insiders, db_connection, 'insiders')
 etl.appenddb(table_financial_metrics, db_connection, 'financial_metrics')
 etl.appenddb(table_sentiment, db_connection, 'sentiment')
+
+# data for first request
+db.cursor.execute('select NAME from INSIDERS')
+data1 = db.cursor.fetchall()
+data1 = list(set(data1))
+
+# data for second request
+db.cursor.execute('select * from INSIDERS')
+data2 = db.cursor.fetchall()
+data2_modify = {}
+for row in data2:
+    if row[0] not in data2_modify:
+        data2_modify[row[0]] = []
+    data2_modify[row[0]] += [row[1:]]
+data2 = data2_modify
+
+# data for third request
+db.cursor.execute('select buy, period from recommendation')
+data3 = db.cursor.fetchall()
+data3_modify = {}
+for row in data3:
+    data3_modify[row[1]] = row[0]
+data3 = data3_modify
 db.disconnect()
+
+
+app = Flask(__name__)
+
+
+@app.route('/')
+def hello():
+    return 'HELLO!'
+
+
+# returns the names of all insiders
+@app.route('/insider_names/', methods=['GET', 'POST'])
+def ins_name_list():
+    if request.method == 'POST':
+        return 'post requests are not processed'
+    else:
+        response = jsonify(data1)
+        response.status_code = 200
+        return response
+
+
+# returns information about the insider by name
+@app.route('/insider_info/', methods=['GET', 'POST'])
+def ins_info():
+    if request.method == 'POST':
+        return 'post requests are not processed'
+    else:
+        response = jsonify(list(data2[request.args.get('insider_name')]))
+        response.status_code = 200
+        return response
+
+
+# returns a buy recommendation for a specific date
+@app.route('/sentiment/', methods=['GET', 'POST'])
+def recommendation_to_buy():
+    if request.method == 'POST':
+        return 'post requests are not processed'
+    else:
+        response = str(data3[request.args.get('date')])
+        return response
